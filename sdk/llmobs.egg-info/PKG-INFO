@@ -1,0 +1,6 @@
+Metadata-Version: 2.1
+Name: llmobs
+Version: 0.1.0
+Summary: Lightweight LLM tracing SDK
+Requires-Python: >=3.11
+Provides-Extra: dev
