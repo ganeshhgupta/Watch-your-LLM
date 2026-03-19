@@ -12,7 +12,7 @@ interface Step { title: string; content: string }
 interface TraceRow { function_name: string; latency_ms: number; cost_usd: number | null; error_class: string | null }
 
 // ---------------------------------------------------------------------------
-// API helper
+// API helpers
 // ---------------------------------------------------------------------------
 async function post(path: string, body: object) {
   const res = await fetch(`${BASE_URL}/v1/playground/${path}`, {
@@ -22,6 +22,30 @@ async function post(path: string, body: object) {
   })
   if (!res.ok) throw new Error(await res.text())
   return res.json()
+}
+
+async function* streamSSE(path: string, body: object): AsyncGenerator<any> {
+  const res = await fetch(`${BASE_URL}/v1/playground/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try { yield JSON.parse(line.slice(6)) } catch {}
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -144,10 +168,27 @@ function StepCard({ step, index }: { step: Step; index: number }) {
         <span className="text-[#6b7280] text-xs">{open ? '▲' : '▼'}</span>
       </button>
       {open && (
-        <div className="px-4 pb-4">
+        <div className="px-4 pb-4 max-h-72 overflow-y-auto">
           <p className="text-sm text-[#d1d5db] whitespace-pre-wrap leading-relaxed">{step.content}</p>
         </div>
       )}
+    </div>
+  )
+}
+
+function ThinkingLine({ text }: { text: string }) {
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1a1a1a] border border-[#2a2a2a]">
+      <span className="flex gap-0.5">
+        {[0, 1, 2].map(i => (
+          <span
+            key={i}
+            className="w-1 h-1 rounded-full bg-[#6b7280] animate-bounce"
+            style={{ animationDelay: `${i * 0.15}s` }}
+          />
+        ))}
+      </span>
+      <span className="text-xs text-[#6b7280] italic">{text}</span>
     </div>
   )
 }
@@ -239,34 +280,34 @@ function ChatTab({ sessionId }: { sessionId: string }) {
 // ---------------------------------------------------------------------------
 function CotTab({ sessionId }: { sessionId: string }) {
   const [question, setQuestion] = useState('')
-  const [result, setResult] = useState<{ plan: string; reasoning: string; answer: string } | null>(null)
+  const [steps, setSteps] = useState<Step[]>([])
+  const [thinking, setThinking] = useState('')
   const [loading, setLoading] = useState(false)
 
   async function run() {
     if (!question.trim() || loading) return
     setLoading(true)
-    setResult(null)
+    setSteps([])
+    setThinking('')
     try {
-      const data = await post('cot', { question: question.trim(), session_id: sessionId })
-      setResult(data)
+      for await (const event of streamSSE('cot/stream', { question: question.trim(), session_id: sessionId })) {
+        if (event.type === 'thinking') setThinking(event.text)
+        else if (event.type === 'step') { setThinking(''); setSteps(prev => [...prev, { title: event.title, content: event.content }]) }
+        else if (event.type === 'done') { setThinking(''); setLoading(false) }
+      }
     } catch (e: any) {
       alert(`Error: ${e.message}`)
     } finally {
       setLoading(false)
+      setThinking('')
     }
   }
-
-  const steps: Step[] = result ? [
-    { title: '1 · Break it down', content: result.plan },
-    { title: '2 · Reason through it', content: result.reasoning },
-    { title: '3 · Final Answer', content: result.answer },
-  ] : []
 
   return (
     <div className="flex flex-col h-full p-4 gap-4">
       <div>
         <p className="text-xs text-[#6b7280] mb-2">
-          Runs 3 sequential LLM calls — Plan → Reason → Answer — each traced separately.
+          3 sequential LLM calls — Plan → Reason → Answer — each traced separately.
         </p>
         <div className="flex gap-2">
           <input
@@ -280,19 +321,11 @@ function CotTab({ sessionId }: { sessionId: string }) {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto flex flex-col gap-3">
-        {steps.length === 0 && !loading && (
+        {steps.length === 0 && !thinking && !loading && (
           <EmptyHint text="Try: 'Should a startup use microservices or a monolith?'" />
         )}
-        {loading && (
-          <div className="flex flex-col gap-3">
-            {['Planning steps...', 'Reasoning through each step...', 'Forming final answer...'].map((s, i) => (
-              <div key={i} className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-4 animate-pulse">
-                <p className="text-xs text-[#6b7280]">{s}</p>
-              </div>
-            ))}
-          </div>
-        )}
         {steps.map((s, i) => <StepCard key={i} step={s} index={i} />)}
+        {thinking && <ThinkingLine text={thinking} />}
       </div>
     </div>
   )
@@ -433,20 +466,26 @@ const AGENTS: { type: AgentType; label: string; desc: string; color: string; exa
 function AgentsTab({ sessionId }: { sessionId: string }) {
   const [selected, setSelected] = useState<AgentType | null>(null)
   const [task, setTask] = useState('')
-  const [result, setResult] = useState<{ steps: Step[] } | null>(null)
+  const [steps, setSteps] = useState<Step[]>([])
+  const [thinking, setThinking] = useState('')
   const [loading, setLoading] = useState(false)
 
   async function run() {
     if (!selected || !task.trim() || loading) return
     setLoading(true)
-    setResult(null)
+    setSteps([])
+    setThinking('')
     try {
-      const data = await post('agent', { agent_type: selected, task: task.trim(), session_id: sessionId })
-      setResult(data)
+      for await (const event of streamSSE('agent/stream', { agent_type: selected, task: task.trim(), session_id: sessionId })) {
+        if (event.type === 'thinking') setThinking(event.text)
+        else if (event.type === 'step') { setThinking(''); setSteps(prev => [...prev, { title: event.title, content: event.content }]) }
+        else if (event.type === 'done') { setThinking(''); setLoading(false) }
+      }
     } catch (e: any) {
       alert(`Error: ${e.message}`)
     } finally {
       setLoading(false)
+      setThinking('')
     }
   }
 
@@ -458,7 +497,7 @@ function AgentsTab({ sessionId }: { sessionId: string }) {
         {AGENTS.map(a => (
           <button
             key={a.type}
-            onClick={() => { setSelected(a.type); setTask(''); setResult(null) }}
+            onClick={() => { setSelected(a.type); setTask(''); setSteps([]); setThinking('') }}
             className={`border rounded-lg p-3 text-left transition-colors ${a.color} ${selected === a.type ? 'ring-1 ring-orange-400' : ''}`}
           >
             <p className="text-sm font-semibold text-white mb-1">{a.label}</p>
@@ -482,17 +521,8 @@ function AgentsTab({ sessionId }: { sessionId: string }) {
 
       {!selected && <EmptyHint text="Pick an agent type above to get started." />}
 
-      {loading && (
-        <div className="flex flex-col gap-3">
-          {['Step 1 in progress...', 'Step 2 in progress...', 'Step 3 in progress...'].map((s, i) => (
-            <div key={i} className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-4 animate-pulse">
-              <p className="text-xs text-[#6b7280]">{s}</p>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {result?.steps.map((s, i) => <StepCard key={i} step={s} index={i} />)}
+      {steps.map((s, i) => <StepCard key={i} step={s} index={i} />)}
+      {thinking && <ThinkingLine text={thinking} />}
     </div>
   )
 }

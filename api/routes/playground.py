@@ -15,9 +15,10 @@ import time
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import AsyncGenerator, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -275,3 +276,140 @@ async def _debate_agent(client, task, session_id, db):
         {"title": "Counter Argument", "content": con},
         {"title": "Moderator Verdict", "content": verdict},
     ]}
+
+
+# ---------------------------------------------------------------------------
+# SSE helpers
+# ---------------------------------------------------------------------------
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+def _think(text: str) -> str:
+    return _sse({"type": "thinking", "text": text})
+
+
+def _step(title: str, content: str) -> str:
+    return _sse({"type": "step", "title": title, "content": content})
+
+
+# ---------------------------------------------------------------------------
+# Streaming endpoints  (POST → text/event-stream)
+# ---------------------------------------------------------------------------
+
+@router.post("/cot/stream")
+async def playground_cot_stream(req: CotRequest, db: AsyncSession = Depends(get_db)):
+    client = _groq_client()
+    tags = {"type": "cot"}
+
+    async def generate() -> AsyncGenerator[str, None]:
+        yield _think("Reading the question and identifying key components...")
+        plan = await _call(client, [
+            {"role": "system", "content": "You are an analytical reasoner. Break problems into clear numbered steps."},
+            {"role": "user", "content": f"Break this into 3-4 reasoning steps:\n\n{req.question}"},
+        ], "cot_plan", req.session_id, db, {**tags, "step": "plan"})
+        yield _step("1 · Break it down", plan)
+
+        yield _think("Working through each step methodically...")
+        reasoning = await _call(client, [
+            {"role": "system", "content": "You are a methodical reasoner. Work through each step carefully."},
+            {"role": "user", "content": f"Question: {req.question}\n\nSteps:\n{plan}\n\nWork through each step in detail:"},
+        ], "cot_reason", req.session_id, db, {**tags, "step": "reason"})
+        yield _step("2 · Reason through it", reasoning)
+
+        yield _think("Synthesising a clear final answer...")
+        answer = await _call(client, [
+            {"role": "system", "content": "You are precise and concise. Summarise into a clean final answer."},
+            {"role": "user", "content": f"Question: {req.question}\n\nReasoning:\n{reasoning}\n\nFinal answer:"},
+        ], "cot_answer", req.session_id, db, {**tags, "step": "answer"})
+        yield _step("3 · Final Answer", answer)
+
+        yield _sse({"type": "done"})
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/agent/stream")
+async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(get_db)):
+    client = _groq_client()
+
+    async def research() -> AsyncGenerator[str, None]:
+        t = {"type": "agent", "agent": "research"}
+        yield _think("Designing a research plan...")
+        plan = await _call(client, [
+            {"role": "system", "content": "You are a research planner. Create a concise 3-step research plan."},
+            {"role": "user", "content": f"Create a research plan for: {req.task}"},
+        ], "agent_plan", req.session_id, db, {**t, "step": "plan"})
+        yield _step("Research Plan", plan)
+
+        yield _think("Gathering findings for each research step...")
+        findings = await _call(client, [
+            {"role": "system", "content": "You are a research analyst. Provide detailed, factual findings."},
+            {"role": "user", "content": f"Research plan:\n{plan}\n\nProvide findings for each step on: {req.task}"},
+        ], "agent_research", req.session_id, db, {**t, "step": "research"})
+        yield _step("Findings", findings)
+
+        yield _think("Writing executive summary...")
+        report = await _call(client, [
+            {"role": "system", "content": "You are a report writer. Write a clear executive summary."},
+            {"role": "user", "content": f"Findings:\n{findings}\n\nWrite an executive summary on: {req.task}"},
+        ], "agent_synthesize", req.session_id, db, {**t, "step": "synthesize"})
+        yield _step("Executive Summary", report)
+        yield _sse({"type": "done"})
+
+    async def code() -> AsyncGenerator[str, None]:
+        t = {"type": "agent", "agent": "code"}
+        yield _think("Analysing the task and designing an approach...")
+        design = await _call(client, [
+            {"role": "system", "content": "You are a software architect. Analyse the task and outline your approach."},
+            {"role": "user", "content": f"Analyse and outline an approach for:\n{req.task}"},
+        ], "agent_design", req.session_id, db, {**t, "step": "design"})
+        yield _step("Design & Approach", design)
+
+        yield _think("Writing the implementation...")
+        impl = await _call(client, [
+            {"role": "system", "content": "You are an expert programmer. Write clean, well-commented code."},
+            {"role": "user", "content": f"Task: {req.task}\n\nApproach:\n{design}\n\nWrite the implementation:"},
+        ], "agent_code", req.session_id, db, {**t, "step": "code"})
+        yield _step("Implementation", impl)
+
+        yield _think("Reviewing and explaining the code...")
+        review = await _call(client, [
+            {"role": "system", "content": "You are a code reviewer. Explain the code and suggest improvements."},
+            {"role": "user", "content": f"Review and explain:\n{impl}"},
+        ], "agent_review", req.session_id, db, {**t, "step": "review"})
+        yield _step("Review & Explanation", review)
+        yield _sse({"type": "done"})
+
+    async def debate() -> AsyncGenerator[str, None]:
+        t = {"type": "agent", "agent": "debate"}
+        yield _think("Constructing the pro argument...")
+        pro = await _call(client, [
+            {"role": "system", "content": "You are a skilled debater. Argue persuasively IN FAVOR with evidence."},
+            {"role": "user", "content": f"Argue strongly FOR: {req.task}"},
+        ], "agent_pro", req.session_id, db, {**t, "step": "pro"})
+        yield _step("Pro Argument", pro)
+
+        yield _think("Formulating the counter argument...")
+        con = await _call(client, [
+            {"role": "system", "content": "You are a skilled debater. Challenge the pro argument and argue AGAINST."},
+            {"role": "user", "content": f"Topic: {req.task}\n\nPro argues:\n{pro}\n\nNow argue strongly AGAINST:"},
+        ], "agent_con", req.session_id, db, {**t, "step": "con"})
+        yield _step("Counter Argument", con)
+
+        yield _think("Moderator is weighing both sides...")
+        verdict = await _call(client, [
+            {"role": "system", "content": "You are an impartial moderator. Summarise both sides and give a balanced verdict."},
+            {"role": "user", "content": f"Topic: {req.task}\n\nPro:\n{pro}\n\nCon:\n{con}\n\nYour balanced verdict:"},
+        ], "agent_verdict", req.session_id, db, {**t, "step": "verdict"})
+        yield _step("Moderator Verdict", verdict)
+        yield _sse({"type": "done"})
+
+    generators = {"research": research, "code": code, "debate": debate}
+    if req.agent_type not in generators:
+        raise HTTPException(400, f"Unknown agent_type: {req.agent_type}")
+
+    return StreamingResponse(generators[req.agent_type](), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
