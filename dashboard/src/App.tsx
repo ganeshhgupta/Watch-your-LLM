@@ -6,6 +6,7 @@ import Overview from './pages/Overview'
 import TraceExplorer from './pages/TraceExplorer'
 import ErrorAnalysis from './pages/ErrorAnalysis'
 import Docs from './pages/Docs'
+import Playground from './pages/Playground'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -49,6 +50,16 @@ const NAV_ITEMS = [
         <circle cx="12" cy="12" r="10" />
         <line x1="12" y1="8" x2="12" y2="12" />
         <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+    ),
+  },
+  {
+    to: '/app/playground',
+    label: 'Playground',
+    end: false,
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <polygon points="5 3 19 12 5 21 5 3" />
       </svg>
     ),
   },
@@ -151,6 +162,7 @@ export default function App() {
             <Route index element={<Overview />} />
             <Route path="traces" element={<TraceExplorer />} />
             <Route path="errors" element={<ErrorAnalysis />} />
+            <Route path="playground" element={<Playground />} />
             <Route path="docs" element={<Docs />} />
           </Route>
         </Routes>

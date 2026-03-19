@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
 from routes.demo import router as demo_router
+from routes.playground import router as playground_router
 from routes.stats import router as stats_router
 from routes.traces import router as traces_router
 
@@ -44,6 +45,7 @@ app.add_middleware(
 app.include_router(traces_router)
 app.include_router(stats_router)
 app.include_router(demo_router)
+app.include_router(playground_router)
 
 
 @app.get("/health")
