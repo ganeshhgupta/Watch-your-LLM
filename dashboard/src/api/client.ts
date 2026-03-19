@@ -108,4 +108,7 @@ export const api = {
   getModels: () => fetchJSON<ModelStats[]>('/v1/stats/models'),
 
   getErrors: () => fetchJSON<ErrorStats[]>('/v1/stats/errors'),
+
+  runDemo: () =>
+    fetch(BASE_URL + '/v1/demo/', { method: 'POST' }).then(r => r.json()),
 }

@@ -1,10 +1,29 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { StatCard } from '../components/StatCard'
 import { CostChart } from '../components/CostChart'
 import { ModelTable } from '../components/ModelTable'
 
 export default function Overview() {
+  const queryClient = useQueryClient()
+  const [demoState, setDemoState] = useState<'idle' | 'running' | 'done'>('idle')
+
+  async function handleRunDemo() {
+    setDemoState('running')
+    try {
+      await api.runDemo()
+      // Wait a few seconds for background tasks to complete, then refresh
+      setTimeout(() => {
+        queryClient.invalidateQueries()
+        setDemoState('done')
+        setTimeout(() => setDemoState('idle'), 3000)
+      }, 6000)
+    } catch {
+      setDemoState('idle')
+    }
+  }
+
   const { data: summary, isLoading: loadingSummary } = useQuery({
     queryKey: ['summary'],
     queryFn: api.getSummary,
@@ -27,7 +46,17 @@ export default function Overview() {
     <div className="p-6 flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Overview</h1>
-        <span className="text-xs text-muted">Auto-refreshes every 30 s</span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted">Auto-refreshes every 30 s</span>
+          <button
+            onClick={handleRunDemo}
+            disabled={demoState === 'running'}
+            className="text-xs px-3 py-1.5 rounded-md font-medium transition-colors
+              bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+          >
+            {demoState === 'running' ? '⏳ Generating...' : demoState === 'done' ? '✓ Done!' : '▶ Generate Demo Data'}
+          </button>
+        </div>
       </div>
 
       {/* Stat cards */}
