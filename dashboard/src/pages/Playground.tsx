@@ -81,7 +81,7 @@ function LiveMetrics({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <aside className="w-60 shrink-0 border-r border-[#2a2a2a] bg-[#111] flex flex-col overflow-hidden">
+    <aside className="w-[38%] shrink-0 border-r border-[#2a2a2a] bg-[#111] flex flex-col overflow-hidden">
       <div className="p-3 border-b border-[#2a2a2a]">
         <p className="text-xs font-semibold text-white mb-3">Live Session Metrics</p>
         <div className="grid grid-cols-2 gap-2">

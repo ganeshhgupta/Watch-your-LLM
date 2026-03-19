@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { StatCard } from '../components/StatCard'
@@ -6,6 +7,7 @@ import { CostChart } from '../components/CostChart'
 import { ModelTable } from '../components/ModelTable'
 
 export default function Overview() {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [demoState, setDemoState] = useState<'idle' | 'running' | 'done'>('idle')
 
@@ -57,6 +59,18 @@ export default function Overview() {
             {demoState === 'running' ? '⏳ Generating...' : demoState === 'done' ? '✓ Done!' : '▶ Generate Demo Data'}
           </button>
         </div>
+      </div>
+
+      {/* Playground CTA */}
+      <div
+        onClick={() => navigate('/app/playground')}
+        className="cursor-pointer bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 rounded-xl p-5 flex items-center justify-between transition-all shadow-lg shadow-blue-500/20 group"
+      >
+        <div>
+          <p className="text-white font-bold text-base mb-0.5">Try the Live Playground</p>
+          <p className="text-blue-100 text-sm">Chat · Chain of Thought · RAG · Multi-Agent — watch every call traced in real time</p>
+        </div>
+        <span className="text-white text-2xl group-hover:translate-x-1 transition-transform">▶</span>
       </div>
 
       {/* Stat cards */}
