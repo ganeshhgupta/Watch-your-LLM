@@ -5,10 +5,13 @@ Anyone can hit this from the dashboard to populate the DB with live data.
 
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,11 +43,13 @@ def _calc_cost(prompt_tokens: int, completion_tokens: int) -> float:
 async def _run_demo(db: AsyncSession) -> dict:
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
+        logger.error("Demo task failed: GROQ_API_KEY not configured")
         return {"error": "GROQ_API_KEY not configured on server"}
 
     try:
         from groq import AsyncGroq
     except ImportError:
+        logger.error("Demo task failed: groq package not installed")
         return {"error": "groq package not installed on server"}
 
     client = AsyncGroq(api_key=api_key)

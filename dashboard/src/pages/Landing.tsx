@@ -54,9 +54,9 @@ const FEATURES = [
 ]
 
 const HOW_IT_WORKS = [
-  { step: '01', title: 'Decorate your function', code: '@trace(model="gemini-1.5-flash")' },
-  { step: '02', title: 'Call your LLM as usual', code: 'response = model.generate_content(prompt)' },
-  { step: '03', title: 'Explore in the dashboard', code: 'http://localhost:5173/app' },
+  { step: '01', title: 'Decorate your function', code: '@trace(model="llama-3.1-8b-instant")' },
+  { step: '02', title: 'Call your LLM as usual', code: 'return client.chat.completions.create(...)' },
+  { step: '03', title: 'Explore in the dashboard', code: 'watchyourllm-ganeshhguptas-projects.vercel.app' },
 ]
 
 export default function Landing() {
@@ -130,24 +130,31 @@ export default function Landing() {
             <span className="text-blue-400">from</span>
             <span className="text-white"> llmobs </span>
             <span className="text-blue-400">import</span>
-            <span className="text-white"> trace{'\n\n'}</span>
+            <span className="text-white"> trace{'\n'}</span>
+            <span className="text-blue-400">from</span>
+            <span className="text-white"> groq </span>
+            <span className="text-blue-400">import</span>
+            <span className="text-white"> Groq{'\n\n'}</span>
+            <span className="text-white">client = Groq(){'\n\n'}</span>
             <span className="text-gray-500">{'# Wrap any LLM function — one line\n'}</span>
             <span className="text-yellow-300">@trace</span>
             <span className="text-white">(model=</span>
-            <span className="text-green-400">"gemini-1.5-flash"</span>
+            <span className="text-green-400">"llama-3.1-8b-instant"</span>
             <span className="text-white">, tags=&#123;</span>
             <span className="text-green-400">"env"</span>
             <span className="text-white">: </span>
             <span className="text-green-400">"prod"</span>
             <span className="text-white">&#125;){'\n'}</span>
             <span className="text-blue-400">def</span>
-            <span className="text-yellow-200"> summarize</span>
-            <span className="text-white">(text: </span>
+            <span className="text-yellow-200"> chat</span>
+            <span className="text-white">(prompt: </span>
             <span className="text-blue-300">str</span>
             <span className="text-white">):{'\n'}</span>
-            <span className="text-white">{'    '}response = model.generate_content(text){'\n'}</span>
             <span className="text-blue-400">{'    '}return</span>
-            <span className="text-white"> response{'\n\n'}</span>
+            <span className="text-white"> client.chat.completions.create({'\n'}</span>
+            <span className="text-white">{'        '}model=</span>
+            <span className="text-green-400">"llama-3.1-8b-instant"</span>
+            <span className="text-white">, messages=[...]){'\n\n'}</span>
             <span className="text-gray-500">{'# → Traces to your dashboard automatically ✓'}</span>
           </pre>
         </div>
@@ -216,11 +223,14 @@ export default function Landing() {
             </thead>
             <tbody>
               {[
+                ['llama-3.1-8b-instant', '$0.05', '$0.08'],
+                ['llama-3.3-70b-versatile', '$0.59', '$0.79'],
                 ['gpt-4o', '$5.00', '$15.00'],
                 ['gpt-4o-mini', '$0.15', '$0.60'],
                 ['claude-3-5-sonnet', '$3.00', '$15.00'],
                 ['gemini-1.5-pro', '$1.25', '$5.00'],
                 ['gemini-1.5-flash', '$0.075', '$0.30'],
+                ['gemini-2.0-flash', '$0.10', '$0.40'],
               ].map(([model, input, output]) => (
                 <tr key={model} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                   <td className="py-3 px-4 font-mono text-gray-800 text-xs">{model}</td>

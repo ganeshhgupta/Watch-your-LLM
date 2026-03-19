@@ -12,5 +12,7 @@ services:
         sync: false          # Set manually in Render dashboard → paste NeonDB connection string
       - key: ALLOWED_ORIGINS
         sync: false          # e.g. https://your-app.vercel.app,http://localhost:5173
+      - key: GROQ_API_KEY
+        sync: false          # Set manually in Render dashboard → needed for demo + playground endpoints
       - key: PYTHON_VERSION
         value: "3.11.0"
