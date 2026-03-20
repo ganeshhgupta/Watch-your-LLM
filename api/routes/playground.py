@@ -1,10 +1,5 @@
 """
 /v1/playground/* — Interactive LLM playground, all calls auto-traced to DB.
-
-POST /v1/playground/chat    — multi-turn chat with context
-POST /v1/playground/cot     — chain-of-thought reasoning (3 LLM steps)
-POST /v1/playground/rag     — RAG over a user-supplied document
-POST /v1/playground/agent   — agentic workflows (research / code / debate)
 """
 
 import json
@@ -95,7 +90,7 @@ def _groq_client():
 
 
 # ---------------------------------------------------------------------------
-# RAG helpers — keyword retrieval, no vector DB needed
+# RAG helpers
 # ---------------------------------------------------------------------------
 
 def _chunk(text: str, size: int = 250) -> List[str]:
@@ -135,6 +130,7 @@ class ChatRequest(BaseModel):
 class CotRequest(BaseModel):
     question: str
     session_id: str = "default"
+    prior_turns: List[dict] = []  # [{"question": str, "answer": str}]
 
 class RagRequest(BaseModel):
     document: str
@@ -145,6 +141,7 @@ class AgentRequest(BaseModel):
     agent_type: str   # "research" | "code" | "debate"
     task: str
     session_id: str = "default"
+    prior_context: str = ""  # summary of prior exchange for follow-ups
 
 
 # ---------------------------------------------------------------------------
@@ -159,29 +156,6 @@ async def playground_chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     return {"reply": reply}
 
 
-@router.post("/cot")
-async def playground_cot(req: CotRequest, db: AsyncSession = Depends(get_db)):
-    client = _groq_client()
-    tags = {"type": "cot"}
-
-    plan = await _call(client, [
-        {"role": "system", "content": "You are an analytical reasoner. Break problems into clear numbered steps."},
-        {"role": "user", "content": f"Break this into 3-4 reasoning steps:\n\n{req.question}"},
-    ], "cot_plan", req.session_id, db, {**tags, "step": "plan"})
-
-    reasoning = await _call(client, [
-        {"role": "system", "content": "You are a methodical reasoner. Work through each step carefully."},
-        {"role": "user", "content": f"Question: {req.question}\n\nSteps:\n{plan}\n\nWork through each step in detail:"},
-    ], "cot_reason", req.session_id, db, {**tags, "step": "reason"})
-
-    answer = await _call(client, [
-        {"role": "system", "content": "You are precise and concise. Summarise into a clean final answer."},
-        {"role": "user", "content": f"Question: {req.question}\n\nReasoning:\n{reasoning}\n\nFinal answer:"},
-    ], "cot_answer", req.session_id, db, {**tags, "step": "answer"})
-
-    return {"plan": plan, "reasoning": reasoning, "answer": answer}
-
-
 @router.post("/rag")
 async def playground_rag(req: RagRequest, db: AsyncSession = Depends(get_db)):
     client = _groq_client()
@@ -194,90 +168,6 @@ async def playground_rag(req: RagRequest, db: AsyncSession = Depends(get_db)):
     return {"chunks": chunks, "answer": answer}
 
 
-@router.post("/agent")
-async def playground_agent(req: AgentRequest, db: AsyncSession = Depends(get_db)):
-    client = _groq_client()
-    if req.agent_type == "research":
-        return await _research_agent(client, req.task, req.session_id, db)
-    elif req.agent_type == "code":
-        return await _code_agent(client, req.task, req.session_id, db)
-    elif req.agent_type == "debate":
-        return await _debate_agent(client, req.task, req.session_id, db)
-    raise HTTPException(400, f"Unknown agent_type: {req.agent_type}")
-
-
-async def _research_agent(client, task, session_id, db):
-    t = {"type": "agent", "agent": "research"}
-    plan = await _call(client, [
-        {"role": "system", "content": "You are a research planner. Create a concise 3-step research plan."},
-        {"role": "user", "content": f"Create a research plan for: {task}"},
-    ], "agent_plan", session_id, db, {**t, "step": "plan"})
-
-    findings = await _call(client, [
-        {"role": "system", "content": "You are a research analyst. Provide detailed, factual findings."},
-        {"role": "user", "content": f"Research plan:\n{plan}\n\nProvide findings for each step on: {task}"},
-    ], "agent_research", session_id, db, {**t, "step": "research"})
-
-    report = await _call(client, [
-        {"role": "system", "content": "You are a report writer. Write a clear executive summary."},
-        {"role": "user", "content": f"Findings:\n{findings}\n\nWrite an executive summary on: {task}"},
-    ], "agent_synthesize", session_id, db, {**t, "step": "synthesize"})
-
-    return {"steps": [
-        {"title": "Research Plan", "content": plan},
-        {"title": "Findings", "content": findings},
-        {"title": "Executive Summary", "content": report},
-    ]}
-
-
-async def _code_agent(client, task, session_id, db):
-    t = {"type": "agent", "agent": "code"}
-    design = await _call(client, [
-        {"role": "system", "content": "You are a software architect. Analyse the task and outline your approach."},
-        {"role": "user", "content": f"Analyse and outline an approach for:\n{task}"},
-    ], "agent_design", session_id, db, {**t, "step": "design"})
-
-    code = await _call(client, [
-        {"role": "system", "content": "You are an expert programmer. Write clean, well-commented code."},
-        {"role": "user", "content": f"Task: {task}\n\nApproach:\n{design}\n\nWrite the implementation:"},
-    ], "agent_code", session_id, db, {**t, "step": "code"})
-
-    review = await _call(client, [
-        {"role": "system", "content": "You are a code reviewer. Explain the code and suggest improvements."},
-        {"role": "user", "content": f"Review and explain:\n{code}"},
-    ], "agent_review", session_id, db, {**t, "step": "review"})
-
-    return {"steps": [
-        {"title": "Design & Approach", "content": design},
-        {"title": "Implementation", "content": code},
-        {"title": "Review & Explanation", "content": review},
-    ]}
-
-
-async def _debate_agent(client, task, session_id, db):
-    t = {"type": "agent", "agent": "debate"}
-    pro = await _call(client, [
-        {"role": "system", "content": "You are a skilled debater. Argue persuasively IN FAVOR with evidence."},
-        {"role": "user", "content": f"Argue strongly FOR: {task}"},
-    ], "agent_pro", session_id, db, {**t, "step": "pro"})
-
-    con = await _call(client, [
-        {"role": "system", "content": "You are a skilled debater. Challenge the pro argument and argue AGAINST."},
-        {"role": "user", "content": f"Topic: {task}\n\nPro argues:\n{pro}\n\nNow argue strongly AGAINST:"},
-    ], "agent_con", session_id, db, {**t, "step": "con"})
-
-    verdict = await _call(client, [
-        {"role": "system", "content": "You are an impartial moderator. Summarise both sides and give a balanced verdict."},
-        {"role": "user", "content": f"Topic: {task}\n\nPro:\n{pro}\n\nCon:\n{con}\n\nYour balanced verdict:"},
-    ], "agent_verdict", session_id, db, {**t, "step": "verdict"})
-
-    return {"steps": [
-        {"title": "Pro Argument", "content": pro},
-        {"title": "Counter Argument", "content": con},
-        {"title": "Moderator Verdict", "content": verdict},
-    ]}
-
-
 # ---------------------------------------------------------------------------
 # SSE helpers
 # ---------------------------------------------------------------------------
@@ -285,17 +175,15 @@ async def _debate_agent(client, task, session_id, db):
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
-
 def _think(text: str) -> str:
     return _sse({"type": "thinking", "text": text})
-
 
 def _step(title: str, content: str) -> str:
     return _sse({"type": "step", "title": title, "content": content})
 
 
 # ---------------------------------------------------------------------------
-# Streaming endpoints  (POST → text/event-stream)
+# CoT streaming — multi-turn aware, convergence extension
 # ---------------------------------------------------------------------------
 
 @router.post("/cot/stream")
@@ -303,18 +191,27 @@ async def playground_cot_stream(req: CotRequest, db: AsyncSession = Depends(get_
     client = _groq_client()
     tags = {"type": "cot"}
 
+    # Build context string from prior turns (last 3)
+    prior_ctx = ""
+    if req.prior_turns:
+        entries = req.prior_turns[-3:]
+        prior_ctx = "Prior reasoning in this session:\n" + "\n\n".join(
+            f"Q: {t.get('question', '')}\nConclusion: {str(t.get('answer', ''))[:400]}"
+            for t in entries
+        ) + "\n\n---\nNew question to reason through:\n"
+
     async def generate() -> AsyncGenerator[str, None]:
         yield _think("Reading the question and identifying key components...")
         plan = await _call(client, [
-            {"role": "system", "content": "You are an analytical reasoner. Break problems into clear numbered steps."},
-            {"role": "user", "content": f"Break this into 3-4 reasoning steps:\n\n{req.question}"},
+            {"role": "system", "content": "You are an analytical reasoner. Break problems into clear numbered steps. Consider prior session context where relevant."},
+            {"role": "user", "content": f"{prior_ctx}Break this into 3-4 reasoning steps:\n\n{req.question}"},
         ], "cot_plan", req.session_id, db, {**tags, "step": "plan"})
         yield _step("1 · Break it down", plan)
 
         yield _think("Working through each step methodically...")
         reasoning = await _call(client, [
-            {"role": "system", "content": "You are a methodical reasoner. Work through each step carefully."},
-            {"role": "user", "content": f"Question: {req.question}\n\nSteps:\n{plan}\n\nWork through each step in detail:"},
+            {"role": "system", "content": "You are a methodical reasoner. Work through each step carefully, building on prior session context if relevant."},
+            {"role": "user", "content": f"{prior_ctx}Question: {req.question}\n\nSteps:\n{plan}\n\nWork through each step in detail:"},
         ], "cot_reason", req.session_id, db, {**tags, "step": "reason"})
         yield _step("2 · Reason through it", reasoning)
 
@@ -325,28 +222,47 @@ async def playground_cot_stream(req: CotRequest, db: AsyncSession = Depends(get_
         ], "cot_answer", req.session_id, db, {**tags, "step": "answer"})
         yield _step("3 · Final Answer", answer)
 
+        # Convergence check — extend if answer is incomplete
+        try:
+            conv = await _call(client, [
+                {"role": "system", "content": "Reply with exactly one word: RESOLVED or EXTEND."},
+                {"role": "user", "content": f"Question: {req.question}\n\nAnswer provided:\n{answer[:800]}\n\nIs this answer complete and satisfactory?"},
+            ], "convergence_check", req.session_id, db, {**tags, "step": "convergence"})
+            if "EXTEND" in conv.upper():
+                yield _think("🔄 Answer needs more depth — extending analysis...")
+                deeper = await _call(client, [
+                    {"role": "system", "content": "You are deepening a reasoning chain. Address the most critical aspect that was underexplored."},
+                    {"role": "user", "content": f"Question: {req.question}\n\nInitial answer:\n{answer}\n\nWhat important aspect was missed or needs deeper treatment? Provide it now:"},
+                ], "cot_extend", req.session_id, db, {**tags, "step": "extend"})
+                yield _step("4 · Deeper Analysis", deeper)
+        except Exception:
+            pass  # convergence check is best-effort, never blocks output
+
         yield _sse({"type": "done"})
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# ---------------------------------------------------------------------------
+# Agent streaming — multi-turn aware, convergence extension
+# ---------------------------------------------------------------------------
+
 @router.post("/agent/stream")
 async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(get_db)):
     client = _groq_client()
+    ctx_note = f"\n\n[Prior session context: {req.prior_context[:600]}]" if req.prior_context else ""
 
     async def research() -> AsyncGenerator[str, None]:
         t = {"type": "agent", "agent": "research"}
 
-        # Round 1 — Researcher proposes hypothesis
         yield _think("🔬 Researcher forming initial hypothesis...")
         hypothesis = await _call(client, [
-            {"role": "system", "content": "You are a rigorous researcher. Propose a detailed hypothesis and initial findings on the topic. Be specific and cite reasoning."},
+            {"role": "system", "content": f"You are a rigorous researcher. Propose a detailed hypothesis and initial findings on the topic. Be specific and cite reasoning.{ctx_note}"},
             {"role": "user", "content": f"Topic: {req.task}\n\nPropose a detailed research hypothesis and initial analysis."},
         ], "researcher_hypothesis", req.session_id, db, {**t, "round": "1", "role": "researcher"})
         yield _step("🔬 Researcher — Hypothesis", hypothesis)
 
-        # Round 1 — Critic challenges
         yield _think("⚡ Critic identifying weaknesses and gaps...")
         critique = await _call(client, [
             {"role": "system", "content": "You are a sharp academic critic. Find flaws, gaps, and unsupported claims in the researcher's hypothesis. Be pointed and specific."},
@@ -354,7 +270,6 @@ async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(
         ], "critic_challenge", req.session_id, db, {**t, "round": "1", "role": "critic"})
         yield _step("⚡ Critic — Challenge", critique)
 
-        # Round 2 — Researcher refines
         yield _think("🔬 Researcher refining based on critique...")
         refined = await _call(client, [
             {"role": "system", "content": "You are a researcher who takes criticism seriously. Address every point raised and strengthen your analysis with more evidence."},
@@ -362,7 +277,6 @@ async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(
         ], "researcher_refine", req.session_id, db, {**t, "round": "2", "role": "researcher"})
         yield _step("🔬 Researcher — Refined Analysis", refined)
 
-        # Round 2 — Critic validates
         yield _think("⚡ Critic evaluating the refined analysis...")
         validation = await _call(client, [
             {"role": "system", "content": "You are a critic doing a final evaluation. Acknowledge what has been addressed well, note any remaining gaps, and give your overall assessment."},
@@ -370,27 +284,41 @@ async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(
         ], "critic_validate", req.session_id, db, {**t, "round": "2", "role": "critic"})
         yield _step("⚡ Critic — Final Evaluation", validation)
 
-        # Aggregator synthesizes
         yield _think("🧠 Aggregator synthesising the full exchange into a report...")
         report = await _call(client, [
             {"role": "system", "content": "You are an objective aggregator. Synthesise the entire researcher-critic exchange into a definitive, balanced report."},
             {"role": "user", "content": f"Topic: {req.task}\n\nHypothesis:\n{hypothesis}\n\nCritique:\n{critique}\n\nRefined analysis:\n{refined}\n\nFinal evaluation:\n{validation}\n\nWrite a definitive synthesised report."},
         ], "aggregator_report", req.session_id, db, {**t, "round": "final", "role": "aggregator"})
         yield _step("🧠 Aggregator — Final Report", report)
+
+        # Convergence extension
+        try:
+            conv = await _call(client, [
+                {"role": "system", "content": "Reply with exactly one word: RESOLVED or EXTEND."},
+                {"role": "user", "content": f"Topic: {req.task}\n\nFinal report:\n{report[:800]}\n\nIs this research comprehensive and complete?"},
+            ], "convergence_check", req.session_id, db, {**t, "role": "convergence"})
+            if "EXTEND" in conv.upper():
+                yield _think("🔄 Critical gaps remain — extending research...")
+                extra = await _call(client, [
+                    {"role": "system", "content": f"You are the researcher providing crucial missing depth.{ctx_note}"},
+                    {"role": "user", "content": f"Topic: {req.task}\n\nPrior findings:\n{report}\n\nDive deeper into the most critical unaddressed aspect and provide new insights:"},
+                ], "researcher_extend", req.session_id, db, {**t, "round": "3", "role": "researcher"})
+                yield _step("🔬 Researcher — Extended Findings", extra)
+        except Exception:
+            pass
+
         yield _sse({"type": "done"})
 
     async def code() -> AsyncGenerator[str, None]:
         t = {"type": "agent", "agent": "code"}
 
-        # Architect designs
         yield _think("🏗️ Architect designing the solution...")
         design = await _call(client, [
-            {"role": "system", "content": "You are a software architect. Produce a concise design: components, data flow, key decisions, and trade-offs."},
+            {"role": "system", "content": f"You are a software architect. Produce a concise design: components, data flow, key decisions, and trade-offs.{ctx_note}"},
             {"role": "user", "content": f"Design a solution for:\n{req.task}"},
         ], "architect_design", req.session_id, db, {**t, "round": "1", "role": "architect"})
         yield _step("🏗️ Architect — Design", design)
 
-        # Coder implements
         yield _think("💻 Coder writing the implementation...")
         impl = await _call(client, [
             {"role": "system", "content": "You are an expert programmer. Write clean, working, well-commented code following the architect's design exactly."},
@@ -398,7 +326,6 @@ async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(
         ], "coder_implement", req.session_id, db, {**t, "round": "1", "role": "coder"})
         yield _step("💻 Coder — Implementation", impl)
 
-        # Reviewer finds issues
         yield _think("🔍 Reviewer auditing the code for bugs and issues...")
         review = await _call(client, [
             {"role": "system", "content": "You are a senior code reviewer. Find bugs, security issues, edge cases, and deviations from the design. Be specific — name line-level problems."},
@@ -406,7 +333,6 @@ async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(
         ], "reviewer_audit", req.session_id, db, {**t, "round": "1", "role": "reviewer"})
         yield _step("🔍 Reviewer — Issues Found", review)
 
-        # Coder fixes
         yield _think("💻 Coder fixing all reviewer issues...")
         fixed = await _call(client, [
             {"role": "system", "content": "You are the coder. Fix every issue the reviewer identified. Show the corrected code with comments explaining each fix."},
@@ -414,27 +340,41 @@ async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(
         ], "coder_fix", req.session_id, db, {**t, "round": "2", "role": "coder"})
         yield _step("💻 Coder — Fixed Implementation", fixed)
 
-        # Aggregator certifies
         yield _think("🧠 Aggregator producing final certified code...")
         certified = await _call(client, [
             {"role": "system", "content": "You are a tech lead. Review the fixed code against the original requirements and produce a final summary: what was built, how to use it, and remaining considerations."},
             {"role": "user", "content": f"Task: {req.task}\n\nFinal code:\n{fixed}\n\nWrite the final delivery summary and usage guide:"},
         ], "aggregator_certify", req.session_id, db, {**t, "round": "final", "role": "aggregator"})
         yield _step("🧠 Aggregator — Delivery Summary", certified)
+
+        # Convergence extension
+        try:
+            conv = await _call(client, [
+                {"role": "system", "content": "Reply with exactly one word: RESOLVED or EXTEND."},
+                {"role": "user", "content": f"Task: {req.task}\n\nDelivery summary:\n{certified[:800]}\n\nIs the implementation complete and production-ready?"},
+            ], "convergence_check", req.session_id, db, {**t, "role": "convergence"})
+            if "EXTEND" in conv.upper():
+                yield _think("🔄 Implementation needs more work — extending...")
+                extra = await _call(client, [
+                    {"role": "system", "content": f"You are the coder addressing remaining gaps.{ctx_note}"},
+                    {"role": "user", "content": f"Task: {req.task}\n\nCurrent implementation:\n{fixed}\n\nSummary gaps:\n{certified}\n\nAddress the most critical missing piece:"},
+                ], "coder_extend", req.session_id, db, {**t, "round": "3", "role": "coder"})
+                yield _step("💻 Coder — Additional Implementation", extra)
+        except Exception:
+            pass
+
         yield _sse({"type": "done"})
 
     async def debate() -> AsyncGenerator[str, None]:
         t = {"type": "agent", "agent": "debate"}
 
-        # Round 1 — Agent A opens
         yield _think("🔵 Agent A building opening argument...")
         a1 = await _call(client, [
-            {"role": "system", "content": "You are Agent A, arguing strongly IN FAVOR. Open with your strongest argument and three supporting points. Be direct and assertive."},
+            {"role": "system", "content": f"You are Agent A, arguing strongly IN FAVOR. Open with your strongest argument and three supporting points. Be direct and assertive.{ctx_note}"},
             {"role": "user", "content": f"Topic: {req.task}\n\nPresent your opening argument FOR this position."},
         ], "agent_a_open", req.session_id, db, {**t, "round": "1", "role": "agent_a"})
         yield _step("🔵 Agent A — Opening Argument", a1)
 
-        # Round 1 — Agent B rebuts
         yield _think("🔴 Agent B formulating rebuttal...")
         b1 = await _call(client, [
             {"role": "system", "content": "You are Agent B, arguing strongly AGAINST. Directly dismantle Agent A's points one by one, then present your counter-position with evidence."},
@@ -442,7 +382,6 @@ async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(
         ], "agent_b_rebut", req.session_id, db, {**t, "round": "1", "role": "agent_b"})
         yield _step("🔴 Agent B — Rebuttal", b1)
 
-        # Round 2 — Agent A counter-rebuts
         yield _think("🔵 Agent A counter-attacking Agent B's rebuttal...")
         a2 = await _call(client, [
             {"role": "system", "content": "You are Agent A. Agent B has attacked your position. Defend your original points, expose flaws in their rebuttal, and escalate with stronger evidence."},
@@ -450,7 +389,6 @@ async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(
         ], "agent_a_counter", req.session_id, db, {**t, "round": "2", "role": "agent_a"})
         yield _step("🔵 Agent A — Counter-Rebuttal", a2)
 
-        # Round 2 — Agent B final argument
         yield _think("🔴 Agent B making final closing argument...")
         b2 = await _call(client, [
             {"role": "system", "content": "You are Agent B. This is your final argument. Address Agent A's counter, expose any remaining weaknesses, and deliver a definitive closing statement."},
@@ -458,13 +396,35 @@ async def playground_agent_stream(req: AgentRequest, db: AsyncSession = Depends(
         ], "agent_b_close", req.session_id, db, {**t, "round": "2", "role": "agent_b"})
         yield _step("🔴 Agent B — Closing Argument", b2)
 
-        # Moderator aggregates and scores
         yield _think("⚖️ Moderator scoring the full debate exchange...")
         verdict = await _call(client, [
             {"role": "system", "content": "You are an impartial debate moderator and judge. Score both agents on: argument strength, evidence quality, rebuttal effectiveness, and overall persuasiveness. Declare a winner with reasoning. Format: score each criterion 1-10 for each agent."},
             {"role": "user", "content": f"Topic: {req.task}\n\nFull debate:\nA opens: {a1}\nB rebuts: {b1}\nA counters: {a2}\nB closes: {b2}\n\nScore both agents and declare the winner:"},
         ], "moderator_verdict", req.session_id, db, {**t, "round": "final", "role": "moderator"})
         yield _step("⚖️ Moderator — Scored Verdict", verdict)
+
+        # Convergence extension — if debate is unresolved, do one more exchange
+        try:
+            conv = await _call(client, [
+                {"role": "system", "content": "Reply with exactly one word: RESOLVED or EXTEND."},
+                {"role": "user", "content": f"Topic: {req.task}\n\nModerator verdict:\n{verdict[:800]}\n\nHas this debate reached a clear, well-supported conclusion?"},
+            ], "convergence_check", req.session_id, db, {**t, "role": "convergence"})
+            if "EXTEND" in conv.upper():
+                yield _think("🔵🔴 Debate unresolved — final exchange round...")
+                a3 = await _call(client, [
+                    {"role": "system", "content": "You are Agent A. The debate continues. Deliver your most compelling final point — something the moderator's feedback revealed as underexplored."},
+                    {"role": "user", "content": f"Topic: {req.task}\n\nDebate so far: A={a1}, B={b1}, A={a2}, B={b2}\n\nModerator noted: {verdict[:400]}\n\nYour decisive final argument FOR:"},
+                ], "agent_a_final", req.session_id, db, {**t, "round": "3", "role": "agent_a"})
+                yield _step("🔵 Agent A — Final Point", a3)
+
+                b3 = await _call(client, [
+                    {"role": "system", "content": "You are Agent B. Respond to Agent A's final point with your own decisive closer."},
+                    {"role": "user", "content": f"Topic: {req.task}\n\nAgent A's final point:\n{a3}\n\nYour decisive final argument AGAINST:"},
+                ], "agent_b_final", req.session_id, db, {**t, "round": "3", "role": "agent_b"})
+                yield _step("🔴 Agent B — Final Point", b3)
+        except Exception:
+            pass
+
         yield _sse({"type": "done"})
 
     generators = {"research": research, "code": code, "debate": debate}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
@@ -9,7 +9,29 @@ type Tab = 'chat' | 'cot' | 'rag' | 'agents'
 type AgentType = 'research' | 'code' | 'debate'
 interface Message { role: 'user' | 'assistant'; content: string }
 interface Step { title: string; content: string }
+interface CotTurn { question: string; steps: Step[]; answer: string }
+interface AgentRound { task: string; steps: Step[]; agentType: AgentType }
 interface TraceRow { function_name: string; latency_ms: number; cost_usd: number | null; error_class: string | null }
+
+// ---------------------------------------------------------------------------
+// sessionStorage hook — survives navigation within the same browser tab
+// ---------------------------------------------------------------------------
+function useSessionStorage<T>(key: string, init: T): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const [state, rawSet] = useState<T>(() => {
+    try {
+      const s = sessionStorage.getItem(key)
+      return s ? JSON.parse(s) : init
+    } catch { return init }
+  })
+  const set: React.Dispatch<React.SetStateAction<T>> = useCallback((action) => {
+    rawSet(prev => {
+      const next = typeof action === 'function' ? (action as (p: T) => T)(prev) : action
+      try { sessionStorage.setItem(key, JSON.stringify(next)) } catch {}
+      return next
+    })
+  }, [key])
+  return [state, set]
+}
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -58,7 +80,7 @@ function LiveMetrics({ sessionId }: { sessionId: string }) {
     const poll = async () => {
       try {
         const data = await fetch(
-          `${BASE_URL}/v1/traces?tag=session:${sessionId}&limit=30`
+          `${BASE_URL}/v1/traces?tag=session:${sessionId}&limit=50`
         ).then(r => r.json())
         if (data.traces) setTraces(data.traces)
       } catch {}
@@ -76,8 +98,7 @@ function LiveMetrics({ sessionId }: { sessionId: string }) {
     if (fn.startsWith('chat')) return 'text-blue-400'
     if (fn.startsWith('cot')) return 'text-purple-400'
     if (fn.startsWith('rag')) return 'text-green-400'
-    if (fn.startsWith('agent')) return 'text-orange-400'
-    return 'text-[#9ca3af]'
+    return 'text-orange-400'
   }
 
   return (
@@ -102,20 +123,16 @@ function LiveMetrics({ sessionId }: { sessionId: string }) {
       <div className="flex-1 overflow-y-auto p-3">
         <p className="text-[10px] text-[#6b7280] uppercase tracking-wide mb-2">Trace Feed</p>
         {traces.length === 0 ? (
-          <p className="text-[11px] text-[#4b5563] italic">
-            No traces yet. Start interacting →
-          </p>
+          <p className="text-[11px] text-[#4b5563] italic">No traces yet. Start interacting →</p>
         ) : (
           <div className="flex flex-col gap-1.5">
-            {traces.map((t, i) => (
+            {[...traces].reverse().map((t, i) => (
               <div key={i} className="bg-[#1a1a1a] rounded p-2 text-[11px]">
                 <div className="flex items-center justify-between mb-0.5">
                   <span className={`font-mono font-medium ${fnColor(t.function_name)}`}>
                     {t.function_name}
                   </span>
-                  {t.error_class && (
-                    <span className="text-red-400 text-[10px]">error</span>
-                  )}
+                  {t.error_class && <span className="text-red-400 text-[10px]">error</span>}
                 </div>
                 <div className="flex justify-between text-[#6b7280]">
                   <span>{t.latency_ms}ms</span>
@@ -147,24 +164,31 @@ function SendButton({ loading, onClick, label = 'Send' }: { loading: boolean; on
     <button
       onClick={onClick}
       disabled={loading}
-      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-lg font-medium transition-colors"
+      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-lg font-medium transition-colors whitespace-nowrap"
     >
       {loading ? 'Thinking...' : label}
     </button>
   )
 }
 
+const STEP_COLORS = [
+  'bg-purple-500/10 border-purple-500/20',
+  'bg-blue-500/10 border-blue-500/20',
+  'bg-green-500/10 border-green-500/20',
+  'bg-orange-500/10 border-orange-500/20',
+  'bg-pink-500/10 border-pink-500/20',
+]
+const STEP_LABELS = ['text-purple-400', 'text-blue-400', 'text-green-400', 'text-orange-400', 'text-pink-400']
+
 function StepCard({ step, index }: { step: Step; index: number }) {
   const [open, setOpen] = useState(true)
-  const colors = ['bg-purple-500/10 border-purple-500/20', 'bg-blue-500/10 border-blue-500/20', 'bg-green-500/10 border-green-500/20']
-  const labels = ['text-purple-400', 'text-blue-400', 'text-green-400']
   return (
-    <div className={`border rounded-lg overflow-hidden ${colors[index % 3]}`}>
+    <div className={`border rounded-lg overflow-hidden ${STEP_COLORS[index % 5]}`}>
       <button
         className="w-full flex items-center justify-between px-4 py-3 text-left"
         onClick={() => setOpen(o => !o)}
       >
-        <span className={`text-sm font-semibold ${labels[index % 3]}`}>{step.title}</span>
+        <span className={`text-sm font-semibold ${STEP_LABELS[index % 5]}`}>{step.title}</span>
         <span className="text-[#6b7280] text-xs">{open ? '▲' : '▼'}</span>
       </button>
       {open && (
@@ -176,16 +200,22 @@ function StepCard({ step, index }: { step: Step; index: number }) {
   )
 }
 
+function TurnDivider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 my-1">
+      <div className="flex-1 h-px bg-[#2a2a2a]" />
+      <span className="text-[10px] text-[#4b5563] px-2 shrink-0 max-w-[70%] truncate font-mono">{label}</span>
+      <div className="flex-1 h-px bg-[#2a2a2a]" />
+    </div>
+  )
+}
+
 function ThinkingLine({ text }: { text: string }) {
   return (
     <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1a1a1a] border border-[#2a2a2a]">
       <span className="flex gap-0.5">
         {[0, 1, 2].map(i => (
-          <span
-            key={i}
-            className="w-1 h-1 rounded-full bg-[#6b7280] animate-bounce"
-            style={{ animationDelay: `${i * 0.15}s` }}
-          />
+          <span key={i} className="w-1 h-1 rounded-full bg-[#6b7280] animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
         ))}
       </span>
       <span className="text-xs text-[#6b7280] italic">{text}</span>
@@ -198,17 +228,15 @@ function EmptyHint({ text }: { text: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 1 — Chat
+// Tab 1 — Chat (session-persisted)
 // ---------------------------------------------------------------------------
 function ChatTab({ sessionId }: { sessionId: string }) {
-  const [messages, setMessages] = useState<Message[]>([])
+  const [messages, setMessages] = useSessionStorage<Message[]>(`wyl_chat_${sessionId}`, [])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   async function send() {
     if (!input.trim() || loading) return
@@ -230,9 +258,7 @@ function ChatTab({ sessionId }: { sessionId: string }) {
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-        {messages.length === 0 && (
-          <EmptyHint text="Start a conversation — full context is maintained for the session." />
-        )}
+        {messages.length === 0 && <EmptyHint text="Start a conversation — full context is maintained for the session." />}
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
@@ -246,14 +272,12 @@ function ChatTab({ sessionId }: { sessionId: string }) {
         ))}
         {loading && (
           <div className="flex justify-start">
-            <div className="bg-[#1e1e1e] border border-[#2a2a2a] rounded-2xl rounded-bl-sm px-4 py-2.5 text-sm text-[#6b7280]">
-              ···
-            </div>
+            <div className="bg-[#1e1e1e] border border-[#2a2a2a] rounded-2xl rounded-bl-sm px-4 py-2.5 text-sm text-[#6b7280]">···</div>
           </div>
         )}
         <div ref={bottomRef} />
       </div>
-      <div className="p-4 border-t border-[#2a2a2a] flex gap-2">
+      <div className="p-4 border-t border-[#2a2a2a] flex gap-2 shrink-0">
         <input
           className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm text-white placeholder-[#4b5563] focus:outline-none focus:border-blue-500"
           placeholder="Type a message..."
@@ -263,10 +287,7 @@ function ChatTab({ sessionId }: { sessionId: string }) {
         />
         <SendButton loading={loading} onClick={send} />
         {messages.length > 0 && (
-          <button
-            onClick={() => setMessages([])}
-            className="px-3 py-2 text-xs text-[#6b7280] hover:text-white border border-[#2a2a2a] rounded-lg transition-colors"
-          >
+          <button onClick={() => setMessages([])} className="px-3 py-2 text-xs text-[#6b7280] hover:text-white border border-[#2a2a2a] rounded-lg transition-colors">
             Clear
           </button>
         )}
@@ -276,24 +297,47 @@ function ChatTab({ sessionId }: { sessionId: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 2 — Chain of Thought
+// Tab 2 — Chain of Thought (multi-turn, chat-thread style)
 // ---------------------------------------------------------------------------
 function CotTab({ sessionId }: { sessionId: string }) {
+  const [turns, setTurns] = useSessionStorage<CotTurn[]>(`wyl_cot_${sessionId}`, [])
   const [question, setQuestion] = useState('')
-  const [steps, setSteps] = useState<Step[]>([])
+  const [activeSteps, setActiveSteps] = useState<Step[]>([])
+  const [currentQ, setCurrentQ] = useState('')
   const [thinking, setThinking] = useState('')
   const [loading, setLoading] = useState(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [turns, activeSteps, thinking])
 
   async function run() {
     if (!question.trim() || loading) return
+    const q = question.trim()
+    setQuestion('')
+    setCurrentQ(q)
     setLoading(true)
-    setSteps([])
+    setActiveSteps([])
     setThinking('')
+
+    const priorTurns = turns.map(t => ({ question: t.question, answer: t.answer }))
+    const currentSteps: Step[] = []
+
     try {
-      for await (const event of streamSSE('cot/stream', { question: question.trim(), session_id: sessionId })) {
-        if (event.type === 'thinking') setThinking(event.text)
-        else if (event.type === 'step') { setThinking(''); setSteps(prev => [...prev, { title: event.title, content: event.content }]) }
-        else if (event.type === 'done') { setThinking(''); setLoading(false) }
+      for await (const event of streamSSE('cot/stream', { question: q, session_id: sessionId, prior_turns: priorTurns })) {
+        if (event.type === 'thinking') {
+          setThinking(event.text)
+        } else if (event.type === 'step') {
+          setThinking('')
+          const step: Step = { title: event.title, content: event.content }
+          currentSteps.push(step)
+          setActiveSteps([...currentSteps])
+        } else if (event.type === 'done') {
+          setThinking('')
+          const answer = currentSteps[currentSteps.length - 1]?.content ?? ''
+          setTurns(prev => [...prev, { question: q, steps: currentSteps, answer }])
+          setActiveSteps([])
+          setLoading(false)
+        }
       }
     } catch (e: any) {
       alert(`Error: ${e.message}`)
@@ -303,39 +347,53 @@ function CotTab({ sessionId }: { sessionId: string }) {
     }
   }
 
+  const hasHistory = turns.length > 0
+
   return (
-    <div className="flex flex-col h-full p-4 gap-4">
-      <div>
-        <p className="text-xs text-[#6b7280] mb-2">
-          3 sequential LLM calls — Plan → Reason → Answer — each traced separately.
-        </p>
-        <div className="flex gap-2">
-          <input
-            className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm text-white placeholder-[#4b5563] focus:outline-none focus:border-purple-500"
-            placeholder="Ask a complex question that benefits from step-by-step reasoning..."
-            value={question}
-            onChange={e => setQuestion(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && run()}
-          />
-          <SendButton loading={loading} onClick={run} label="Reason" />
-        </div>
-      </div>
-      <div className="flex-1 overflow-y-auto flex flex-col gap-3">
-        {steps.length === 0 && !thinking && !loading && (
+    <div className="flex flex-col h-full">
+      <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
+        {!hasHistory && activeSteps.length === 0 && !thinking && !loading && (
           <EmptyHint text="Try: 'Should a startup use microservices or a monolith?'" />
         )}
-        {steps.map((s, i) => <StepCard key={i} step={s} index={i} />)}
-        {thinking && <ThinkingLine text={thinking} />}
+        {turns.map((turn, ti) => (
+          <div key={ti} className="flex flex-col gap-2">
+            <TurnDivider label={`Q: ${turn.question}`} />
+            {turn.steps.map((s, i) => <StepCard key={i} step={s} index={i} />)}
+          </div>
+        ))}
+        {(activeSteps.length > 0 || thinking) && (
+          <div className="flex flex-col gap-2">
+            {hasHistory && <TurnDivider label={`Q: ${currentQ}`} />}
+            {activeSteps.map((s, i) => <StepCard key={i} step={s} index={i} />)}
+            {thinking && <ThinkingLine text={thinking} />}
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+      <div className="p-4 border-t border-[#2a2a2a] flex gap-2 shrink-0">
+        <input
+          className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm text-white placeholder-[#4b5563] focus:outline-none focus:border-purple-500"
+          placeholder={hasHistory ? 'Ask a follow-up or new question...' : 'Ask a complex question that benefits from step-by-step reasoning...'}
+          value={question}
+          onChange={e => setQuestion(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && run()}
+        />
+        <SendButton loading={loading} onClick={run} label={hasHistory ? 'Continue' : 'Reason'} />
+        {hasHistory && (
+          <button onClick={() => { setTurns([]); setActiveSteps([]); setCurrentQ('') }} className="px-3 py-2 text-xs text-[#6b7280] hover:text-white border border-[#2a2a2a] rounded-lg transition-colors">
+            Clear
+          </button>
+        )}
       </div>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Tab 3 — RAG
+// Tab 3 — RAG (document persisted in session)
 // ---------------------------------------------------------------------------
 function RagTab({ sessionId }: { sessionId: string }) {
-  const [document, setDocument] = useState('')
+  const [document, setDocument] = useSessionStorage<string>(`wyl_rag_doc_${sessionId}`, '')
   const [question, setQuestion] = useState('')
   const [result, setResult] = useState<{ chunks: string[]; answer: string } | null>(null)
   const [loading, setLoading] = useState(false)
@@ -383,7 +441,7 @@ function RagTab({ sessionId }: { sessionId: string }) {
           />
           {document && (
             <p className="text-[10px] text-[#4b5563] mt-1">
-              {document.split(/\s+/).length} words · {Math.ceil(document.split(/\s+/).length / 250)} chunks
+              {document.split(/\s+/).filter(Boolean).length} words · {Math.ceil(document.split(/\s+/).filter(Boolean).length / 250)} chunks
             </p>
           )}
         </div>
@@ -437,27 +495,27 @@ function RagTab({ sessionId }: { sessionId: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 4 — Agents
+// Tab 4 — Agents (multi-turn, chat-thread style)
 // ---------------------------------------------------------------------------
 const AGENTS: { type: AgentType; label: string; desc: string; color: string; example: string }[] = [
   {
     type: 'research',
     label: 'Research Agent',
-    desc: 'Plan → Gather findings → Executive summary',
+    desc: 'Researcher ↔ Critic → Aggregator',
     color: 'border-orange-500/30 bg-orange-500/5 hover:bg-orange-500/10',
     example: 'Impact of AI on software engineering jobs',
   },
   {
     type: 'code',
     label: 'Code Agent',
-    desc: 'Design → Implement → Review & explain',
+    desc: 'Architect → Coder ↔ Reviewer → Certify',
     color: 'border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/10',
     example: 'Build a rate limiter in Python',
   },
   {
     type: 'debate',
     label: 'Debate Agent',
-    desc: 'Pro argument → Counter → Moderator verdict',
+    desc: 'A ↔ B (multi-round) → Moderator verdict',
     color: 'border-purple-500/30 bg-purple-500/5 hover:bg-purple-500/10',
     example: 'Open source AI models should be regulated',
   },
@@ -465,21 +523,50 @@ const AGENTS: { type: AgentType; label: string; desc: string; color: string; exa
 
 function AgentsTab({ sessionId }: { sessionId: string }) {
   const [selected, setSelected] = useState<AgentType | null>(null)
+  const [rounds, setRounds] = useSessionStorage<AgentRound[]>(`wyl_agent_${sessionId}`, [])
   const [task, setTask] = useState('')
-  const [steps, setSteps] = useState<Step[]>([])
+  const [activeSteps, setActiveSteps] = useState<Step[]>([])
+  const [currentTask, setCurrentTask] = useState('')
   const [thinking, setThinking] = useState('')
   const [loading, setLoading] = useState(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [rounds, activeSteps, thinking])
 
   async function run() {
     if (!selected || !task.trim() || loading) return
+    const t = task.trim()
+    setTask('')
+    setCurrentTask(t)
     setLoading(true)
-    setSteps([])
+    setActiveSteps([])
     setThinking('')
+
+    // Build prior context from last round's final step (aggregator/moderator output)
+    const lastRound = rounds[rounds.length - 1]
+    const priorContext = lastRound
+      ? `Prior exchange on "${lastRound.task}":\n${lastRound.steps[lastRound.steps.length - 1]?.content?.slice(0, 800) ?? ''}`
+      : ''
+
+    const currentSteps: Step[] = []
+
     try {
-      for await (const event of streamSSE('agent/stream', { agent_type: selected, task: task.trim(), session_id: sessionId })) {
-        if (event.type === 'thinking') setThinking(event.text)
-        else if (event.type === 'step') { setThinking(''); setSteps(prev => [...prev, { title: event.title, content: event.content }]) }
-        else if (event.type === 'done') { setThinking(''); setLoading(false) }
+      for await (const event of streamSSE('agent/stream', {
+        agent_type: selected, task: t, session_id: sessionId, prior_context: priorContext,
+      })) {
+        if (event.type === 'thinking') {
+          setThinking(event.text)
+        } else if (event.type === 'step') {
+          setThinking('')
+          const step: Step = { title: event.title, content: event.content }
+          currentSteps.push(step)
+          setActiveSteps([...currentSteps])
+        } else if (event.type === 'done') {
+          setThinking('')
+          setRounds(prev => [...prev, { task: t, steps: currentSteps, agentType: selected }])
+          setActiveSteps([])
+          setLoading(false)
+        }
       }
     } catch (e: any) {
       alert(`Error: ${e.message}`)
@@ -490,39 +577,67 @@ function AgentsTab({ sessionId }: { sessionId: string }) {
   }
 
   const selectedAgent = AGENTS.find(a => a.type === selected)
+  const hasHistory = rounds.length > 0
 
   return (
-    <div className="flex flex-col h-full p-4 gap-4 overflow-y-auto">
-      <div className="grid grid-cols-3 gap-3">
-        {AGENTS.map(a => (
-          <button
-            key={a.type}
-            onClick={() => { setSelected(a.type); setTask(''); setSteps([]); setThinking('') }}
-            className={`border rounded-lg p-3 text-left transition-colors ${a.color} ${selected === a.type ? 'ring-1 ring-orange-400' : ''}`}
-          >
-            <p className="text-sm font-semibold text-white mb-1">{a.label}</p>
-            <p className="text-[11px] text-[#9ca3af]">{a.desc}</p>
-          </button>
-        ))}
+    <div className="flex flex-col h-full">
+      {/* Fixed top: agent selector + input */}
+      <div className="p-4 border-b border-[#2a2a2a] shrink-0">
+        <div className="grid grid-cols-3 gap-3 mb-3">
+          {AGENTS.map(a => (
+            <button
+              key={a.type}
+              onClick={() => setSelected(a.type)}
+              className={`border rounded-lg p-3 text-left transition-colors ${a.color} ${selected === a.type ? 'ring-1 ring-orange-400' : ''}`}
+            >
+              <p className="text-sm font-semibold text-white mb-1">{a.label}</p>
+              <p className="text-[11px] text-[#9ca3af]">{a.desc}</p>
+            </button>
+          ))}
+        </div>
+        {selected && (
+          <div className="flex gap-2">
+            <input
+              className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm text-white placeholder-[#4b5563] focus:outline-none focus:border-orange-500"
+              placeholder={hasHistory ? `Follow-up or new task for ${selectedAgent?.label}...` : `e.g. "${selectedAgent?.example}"`}
+              value={task}
+              onChange={e => setTask(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && run()}
+            />
+            <SendButton loading={loading} onClick={run} label={hasHistory ? 'Continue' : 'Run Agent'} />
+            {hasHistory && (
+              <button
+                onClick={() => { setRounds([]); setActiveSteps([]); setCurrentTask('') }}
+                className="px-3 py-2 text-xs text-[#6b7280] hover:text-white border border-[#2a2a2a] rounded-lg transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+        {!selected && <p className="text-xs text-[#4b5563] italic">Pick an agent type above to get started.</p>}
       </div>
 
-      {selected && (
-        <div className="flex gap-2">
-          <input
-            className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm text-white placeholder-[#4b5563] focus:outline-none focus:border-orange-500"
-            placeholder={`e.g. "${selectedAgent?.example}"`}
-            value={task}
-            onChange={e => setTask(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && run()}
-          />
-          <SendButton loading={loading} onClick={run} label="Run Agent" />
-        </div>
-      )}
-
-      {!selected && <EmptyHint text="Pick an agent type above to get started." />}
-
-      {steps.map((s, i) => <StepCard key={i} step={s} index={i} />)}
-      {thinking && <ThinkingLine text={thinking} />}
+      {/* Scrollable steps area */}
+      <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
+        {rounds.length === 0 && activeSteps.length === 0 && !thinking && (
+          <EmptyHint text="Agents will appear here as they work through the task." />
+        )}
+        {rounds.map((round, ri) => (
+          <div key={ri} className="flex flex-col gap-2">
+            <TurnDivider label={round.task} />
+            {round.steps.map((s, i) => <StepCard key={`${ri}-${i}`} step={s} index={i} />)}
+          </div>
+        ))}
+        {(activeSteps.length > 0 || thinking) && (
+          <div className="flex flex-col gap-2">
+            {hasHistory && <TurnDivider label={currentTask} />}
+            {activeSteps.map((s, i) => <StepCard key={i} step={s} index={i} />)}
+            {thinking && <ThinkingLine text={thinking} />}
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
     </div>
   )
 }
@@ -538,7 +653,14 @@ const TABS: { id: Tab; label: string }[] = [
 ]
 
 export default function Playground() {
-  const [sessionId] = useState(() => crypto.randomUUID())
+  // Session ID lives in sessionStorage — survives navigation within the tab
+  const [sessionId] = useState(() => {
+    const stored = sessionStorage.getItem('wyl_session_id')
+    if (stored) return stored
+    const id = crypto.randomUUID()
+    sessionStorage.setItem('wyl_session_id', id)
+    return id
+  })
   const [activeTab, setActiveTab] = useState<Tab>('chat')
 
   return (
@@ -546,7 +668,6 @@ export default function Playground() {
       <LiveMetrics sessionId={sessionId} />
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Tab bar */}
         <div className="flex border-b border-[#2a2a2a] bg-[#111] px-4 gap-1 shrink-0">
           {TABS.map(t => (
             <button
@@ -562,13 +683,10 @@ export default function Playground() {
             </button>
           ))}
           <div className="ml-auto flex items-center">
-            <span className="text-[10px] text-[#4b5563] px-2">
-              session · {sessionId.slice(0, 8)}
-            </span>
+            <span className="text-[10px] text-[#4b5563] px-2">session · {sessionId.slice(0, 8)}</span>
           </div>
         </div>
 
-        {/* Tab content */}
         <div className="flex-1 overflow-hidden">
           {activeTab === 'chat' && <ChatTab sessionId={sessionId} />}
           {activeTab === 'cot' && <CotTab sessionId={sessionId} />}
