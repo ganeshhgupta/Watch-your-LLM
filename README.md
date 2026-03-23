@@ -1,7 +1,7 @@
 # Watch your LLM
 
 > Full visibility into every LLM call. Trace prompts, responses, tokens, latency, and cost — self-hosted, no vendor lock-in.
-
+> Try it here: (https://watchyourllm-ganeshhguptas-projects.vercel.app/)
 ---
 
 ## Architecture
